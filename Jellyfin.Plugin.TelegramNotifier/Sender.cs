@@ -103,6 +103,14 @@ namespace Jellyfin.Plugin.TelegramNotifier
 
         public async Task<bool> SendMessageWithPhoto(string notificationType, string message, string imageUrl, string botToken, string chatId, bool isSilentNotification, string threadId)
         {
+            byte[]? imageBytes = await GetImageAsync(notificationType, imageUrl).ConfigureAwait(false);
+            if (imageBytes is null)
+            {
+                // The item has no usable image (e.g. a newly created season without artwork yet).
+                // Send the notification as text rather than dropping it.
+                return await SendMessage(notificationType, message, botToken, chatId, isSilentNotification, threadId).ConfigureAwait(false);
+            }
+
             try
             {
                 string url = $"https://api.telegram.org/bot{botToken}/sendPhoto";
@@ -119,11 +127,6 @@ namespace Jellyfin.Plugin.TelegramNotifier
                     formData.Add(new StringContent(threadId), "message_thread_id");
                 }
 
-                _logger.LogInformation("Reaching for image: {Url}", imageUrl);
-                HttpResponseMessage imageResponse = await _httpClient.GetAsync(imageUrl).ConfigureAwait(false);
-                imageResponse.EnsureSuccessStatusCode();
-                byte[] imageBytes = await imageResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-
                 ByteArrayContent imageContent = new ByteArrayContent(imageBytes);
                 formData.Add(imageContent, "photo", "image.png");
 
@@ -137,6 +140,27 @@ namespace Jellyfin.Plugin.TelegramNotifier
             {
                 _logger.LogError("({NotificationType}): Message could not be sent, please check your configuration.", notificationType);
                 return false;
+            }
+        }
+
+        private async Task<byte[]?> GetImageAsync(string notificationType, string imageUrl)
+        {
+            try
+            {
+                _logger.LogInformation("Reaching for image: {Url}", imageUrl);
+                using HttpResponseMessage imageResponse = await _httpClient.GetAsync(imageUrl).ConfigureAwait(false);
+                if (!imageResponse.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("({NotificationType}): Image could not be fetched ({StatusCode}), sending without image: {Url}", notificationType, (int)imageResponse.StatusCode, imageUrl);
+                    return null;
+                }
+
+                return await imageResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, "({NotificationType}): Image could not be fetched, sending without image: {Url}", notificationType, imageUrl);
+                return null;
             }
         }
     }

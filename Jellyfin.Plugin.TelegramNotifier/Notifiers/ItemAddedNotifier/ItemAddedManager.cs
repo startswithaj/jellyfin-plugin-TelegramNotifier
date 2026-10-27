@@ -50,15 +50,18 @@ public class ItemAddedManager : IItemAddedManager
                     {
                         // Remove item from queue.
                         _itemProcessQueue.TryRemove(key, out _);
-                        return;
+                        continue;
                     }
 
                     _logger.LogDebug("Item {ItemName}", item.Name);
 
                     // Metadata not refreshed yet and under retry limit.
-                    if (item.ProviderIds.Keys.Count == 0 && container.RetryCount < MaxRetries)
+                    // Jellyfin leaves DateLastRefreshed at MinValue until the first metadata refresh completes.
+                    // Provider ids are not used as the signal: items such as brand-new episodes or home videos
+                    // can have none even after a successful refresh, which delayed them by the full retry limit.
+                    if (item.DateLastRefreshed == DateTime.MinValue && container.RetryCount < MaxRetries)
                     {
-                        _logger.LogDebug("Requeue {ItemName}, no provider ids", item.Name);
+                        _logger.LogDebug("Requeue {ItemName}, metadata not refreshed yet", item.Name);
                         container.RetryCount++;
                         _itemProcessQueue.AddOrUpdate(key, container, (_, _) => container);
                         continue;
