@@ -1,0 +1,160 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    # Release tags use the plugin version, e.g. 12.3.0.1
+    tags: ['*.*.*.*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      target_abi: ${{ steps.abi.outputs.target_abi }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Check tag matches AssemblyVersion
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's:.*<AssemblyVersion>\(.*\)</AssemblyVersion>.*:\1:p' Jellyfin.Plugin.TelegramNotifier/Jellyfin.Plugin.TelegramNotifier.csproj)
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match AssemblyVersion $version in the csproj"
+            exit 1
+          fi
+
+      - name: Build
+        run: dotnet publish Jellyfin.Plugin.TelegramNotifier/Jellyfin.Plugin.TelegramNotifier.csproj --configuration Release --output publish
+
+      # The release zip only needs the plugin DLL; Jellyfin provides Jellyfin.Controller itself.
+      - name: Package
+        run: |
+          mkdir dist
+          zip -j -X dist/TelegramNotifier.zip publish/Jellyfin.Plugin.TelegramNotifier.dll
+
+      # targetAbi is the major.minor of the Jellyfin.Controller version the build resolved,
+      # e.g. 10.11.11 -> 10.11.0.0, matching how previous releases were published.
+      - name: Determine target ABI
+        id: abi
+        run: |
+          controller=$(python3 -c 'import json; a = json.load(open("Jellyfin.Plugin.TelegramNotifier/obj/project.assets.json")); print(next(k.split("/")[1] for k in a["libraries"] if k.startswith("Jellyfin.Controller/")))')
+          echo "Built against Jellyfin.Controller $controller"
+          echo "target_abi=$(echo "$controller" | cut -d. -f1,2).0.0" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plugin
+          path: dist/TelegramNotifier.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ github.ref_name }}
+      TARGET_ABI: ${{ needs.build.outputs.target_abi }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Check out the default branch, since the manifest update is committed there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: plugin
+          path: dist
+
+      # Signed build provenance: lets anyone verify the zip was built by this workflow from this commit.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/TelegramNotifier.zip
+
+      - name: Prepare changelog and checksums
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          # Annotated tags provide the changelog; lightweight tags fall back to a link to the release.
+          # Create the tag with --cleanup=verbatim to keep markdown headings, since git strips lines starting with '#' by default.
+          if [ "$(git cat-file -t "refs/tags/$TAG")" = "tag" ]; then
+            contents=$(git tag -l --format='%(contents)' "$TAG")
+            signature=$(git tag -l --format='%(contents:signature)' "$TAG")
+            printf '%s\n' "${contents%"$signature"}" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > changelog.md
+          else
+            echo "See https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" > changelog.md
+          fi
+          echo "MD5=$(md5sum dist/TelegramNotifier.zip | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "SHA256=$(sha256sum dist/TelegramNotifier.zip | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Create release
+        run: |
+          {
+            cat changelog.md
+            echo
+            echo "---"
+            echo
+            echo "Built by GitHub Actions from \`$(git rev-parse "refs/tags/$TAG^{commit}")\` ([workflow run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID))."
+            echo
+            echo "- SHA-256: \`$SHA256\`"
+            echo "- MD5 (manifest checksum): \`$MD5\`"
+            echo
+            echo "Verify the download was built by this repository's workflow:"
+            echo
+            echo '```'
+            echo "gh attestation verify TelegramNotifier.zip -R $GITHUB_REPOSITORY"
+            echo '```'
+          } > notes.md
+          gh release create "$TAG" dist/TelegramNotifier.zip --verify-tag --title "$TAG" --notes-file notes.md
+
+      # Done after the release exists, so the manifest never points at a missing zip.
+      - name: Add version to manifest
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          from datetime import datetime, timezone
+
+          tag = os.environ["TAG"]
+          with open("manifest.json", encoding="utf-8") as f:
+              manifest = json.load(f)
+
+          versions = manifest[0]["versions"]
+          if any(v["version"] == tag for v in versions):
+              raise SystemExit(f"{tag} is already in manifest.json")
+
+          versions.insert(0, {
+              "checksum": os.environ["MD5"],
+              "version": tag,
+              "targetAbi": os.environ["TARGET_ABI"],
+              "sourceUrl": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}/TelegramNotifier.zip",
+              "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "changelog": open("changelog.md", encoding="utf-8").read().strip(),
+          })
+
+          # Same formatting as the existing file: 4-space indent, raw unicode, no trailing newline.
+          with open("manifest.json", "w", encoding="utf-8") as f:
+              f.write(json.dumps(manifest, indent=4, ensure_ascii=False))
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          git commit -m "adds $TAG to manifest"
+          git push origin "HEAD:$DEFAULT_BRANCH"
