@@ -1,3 +1,31 @@
+## About this fork
+
+This is a fork of [RomainPierre7/jellyfin-plugin-TelegramNotifier](https://github.com/RomainPierre7/jellyfin-plugin-TelegramNotifier). All credit for the plugin goes to its original author. The rest of this README is upstream's.
+
+### What this fork adds
+
+- **Item-added notifications are no longer delayed by ~20 minutes.** Upstream waits until an item has provider ids (TVDB/TMDB/IMDb), and only gives up after 10 retries, roughly 20 minutes. Brand-new episodes and home videos often never get provider ids, so they always waited the full time. This fork sends the notification as soon as Jellyfin's first metadata refresh for the item has finished.
+- **Items without artwork are no longer dropped.** If the poster can't be fetched (a newly created season, for example), upstream drops the whole notification and logs a misleading "please check your configuration" error. This fork sends it as a text message instead.
+- **A deleted item no longer stalls the notification queue** for the rest of that processing run.
+- **The bot token is no longer written to the Jellyfin log** when a message fails to send ([upstream #78](https://github.com/RomainPierre7/jellyfin-plugin-TelegramNotifier/issues/78)).
+- **Releases are built by GitHub Actions**, not on a local machine, and come with signed build provenance. From 12.3.0.1 onward you can verify that a downloaded `TelegramNotifier.zip` was built by this repository's workflow:
+
+  ```
+  gh attestation verify TelegramNotifier.zip -R startswithaj/jellyfin-plugin-TelegramNotifier
+  ```
+
+### Installing from this fork
+
+Follow the install steps below, but use this repository URL instead of the upstream one:
+
+```
+https://raw.githubusercontent.com/startswithaj/jellyfin-plugin-TelegramNotifier/main/manifest.json
+```
+
+If you already have the upstream repository added, disable it. Both repositories serve the same plugin, and Jellyfin's auto-update installs the highest version from any enabled repository, so a newer upstream release would replace this fork's build.
+
+---
+
 # Jellyfin Plugin Telegram Notifier
 
 <a href='https://ko-fi.com/B0B8112Y0Y' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi1.png?v=3' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
