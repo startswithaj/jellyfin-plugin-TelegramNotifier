@@ -9,6 +9,14 @@
         "imageUrl": "https://raw.githubusercontent.com/RomainPierre7/jellyfin-plugin-TelegramNotifier/main/assets/banner.png",
         "versions": [
             {
+                "checksum": "583f20580f772e271e81c3e5bf57621b",
+                "version": "12.3.0.1",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/startswithaj/jellyfin-plugin-TelegramNotifier/releases/download/12.3.0.1/TelegramNotifier.zip",
+                "timestamp": "2026-10-28T04:58:50Z",
+                "changelog": "### 🐛 Fixes\n- Item-added notifications are sent once Jellyfin's metadata refresh finishes, instead of waiting ~20 min for provider ids\n- Items without an image (e.g. new seasons) are sent as text instead of being dropped\n- A deleted item no longer stalls the notification queue\n- The bot token is no longer written to the log when a message fails to send\n\n### 🔧 Build\n- Releases are built by GitHub Actions with signed build provenance"
+            },
+            {
                 "checksum": "7e9f9e623009ae3554f4988d2ae87f53",
                 "version": "12.3.0.0",
                 "targetAbi": "10.11.0.0",
